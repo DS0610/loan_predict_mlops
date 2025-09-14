@@ -1,0 +1,28 @@
+# Python 가상환경
+venv/
+env/
+.env
+
+# Python 캐시 파일
+pycache/
+*.pyc
+*.pyo
+*.pyd
+
+# MLflow 로컬 아티팩트 및 DB
+mlruns/
+mlartifacts/
+mlflow.db
+
+# Evidently 리포트 (로컬 생성)
+reports/
+*.html
+
+# 데이터 파일 (대용량 CSV)
+data/
+*.csv
+
+# IDE 및 OS 설정 파일
+.idea/
+.vscode/
+.DS_Store

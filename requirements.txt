@@ -1,0 +1,18 @@
+# 데이터 처리 및 모델링
+pandas
+numpy
+scikit-learn
+lightgbm
+
+# MLOps 및 모델 서빙
+mlflow
+fastapi
+uvicorn[standard]
+
+# 데이터 모니터링
+evidently
+
+# 환경 변수 관리
+python-dotenv
+
+# pip install -r requirements.txt
