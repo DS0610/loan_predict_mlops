@@ -8,9 +8,11 @@ lightgbm
 mlflow
 fastapi
 uvicorn[standard]
+pydantic
 
 # 데이터 모니터링
 evidently
+
 
 # 환경 변수 관리
 python-dotenv
