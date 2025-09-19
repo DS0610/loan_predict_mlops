@@ -28,16 +28,21 @@ menu = st.sidebar.radio("메뉴 선택", ["📝 실시간 예측", "📊 모니�
 # 실시간 예측
 if menu == "📝 실시간 예측":
     st.title("📝 실시간 대출 예측")
-    st.markdown("대출 신청 정보를 입력하면 **승인(0) / 거절(1)** 여부를 예측합니다.")
+    st.markdown("대출 신청 정보를 입력하면 승인(0) / 거절(1) 여부를 예측합니다.")
 
     with st.form("loan_form"):
-        amount_requested = st.number_input("대출 신청 금액 (단위: USD)", min_value=500, max_value=50000, step=500, value=5000)
+        amount_requested = st.slider(   "대출 신청 금액 (USD)", min_value=500, max_value=50000, step=500, value=5000)
         employment_length = st.slider("근속 연수", 0, 20, 5)
-        dti = st.number_input("DTI (부채/소득 비율)", min_value=0.0, max_value=100.0, step=0.1, value=10.0)
+        dti = st.slider("DTI (부채/소득 비율)", min_value=0.0, max_value=100.0, step=0.1, value=10.0)
         state = st.selectbox("거주 주(State)", ["CA", "TX", "FL", "NY", "NV"])
-        zip_prefix = st.number_input("우편번호 앞 3자리", min_value=100, max_value=999, step=1, value=941)
+        zip_prefix = st.text_input("우편번호 앞 3자리", "941")
+        try:
+            zip_prefix = int(zip_prefix)
+        except ValueError:
+            st.warning("우편번호는 숫자만 입력하세요.")
+            zip_prefix = 0
         # threshold = st.slider("판단 기준 (Threshold)", 0.0, 1.0, 0.4, 0.05)
-        threshold = 0.4
+        threshold = 0.7
 
         submitted = st.form_submit_button("예측하기")
 
@@ -69,8 +74,8 @@ if menu == "📝 실시간 예측":
 
             # 출력
             st.subheader("📌 예측 결과")
-            st.write(f"Prediction: {'✅ 승인(0)' if prediction == 0 else '❌ 거절(1)'}")
-            st.metric(label="Probability", value=f"{proba:.4f}", delta=f"Threshold={threshold:.2f}")
+            st.write(f"Prediction: {'👌 승인(0)' if prediction == 0 else '🙅‍♀️ 거절(1)'}")
+            st.metric(label="Probability", value=f"{proba:.2f}", delta=f"Threshold={threshold:.2f}")
 
             # 로그 저장
             log_data = {
@@ -109,12 +114,20 @@ elif menu == "📊 모니터링":
             rejected = (df["prediction"] == 1).sum()
 
             st.subheader("모니터링 횟수")
-            st.write(f"전체 요청 수: **{total}**")
-            st.write(f"승인(0): **{approved}건 ({approved/total:.2%})**")
-            st.write(f"거절(1): **{rejected}건 ({rejected/total:.2%})**")
+            st.write(f"전체 요청 수: {total}")
+            st.write(f"승인(0): {approved}건 ({approved/total:.2%})")
+            st.write(f"거절(1): {rejected}건 ({rejected/total:.2%})")
 
             st.subheader("📊 승인/거절 분포")
-            st.bar_chart(df["prediction"].value_counts().sort_index())
+
+            # prediction 컬럼을 숫자로 변환하고 0, 1만 남기기
+            df["prediction"] = pd.to_numeric(df["prediction"], errors="coerce")
+            pred_counts = df[df["prediction"].isin([0, 1])]["prediction"].value_counts().sort_index()
+
+            # 숫자 → 라벨 매핑
+            pred_counts.index = pred_counts.index.map({0: "승인(0)", 1: "거절(1)"})
+
+            st.bar_chart(pred_counts)
 
             if "state" in df.columns:
                 st.subheader("🌎 주(State)별 승인율")

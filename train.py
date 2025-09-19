@@ -1,214 +1,168 @@
 import argparse
-import pandas as pd
-import numpy as np
-from sklearn.model_selection import train_test_split
-from sklearn.preprocessing import StandardScaler, LabelEncoder
-from sklearn.impute import SimpleImputer
-from sklearn.linear_model import LogisticRegression
-from sklearn.metrics import roc_auc_score, f1_score, accuracy_score, precision_score, recall_score
-from imblearn.over_sampling import SMOTE
-import lightgbm as lgb
-import optuna
-import mlflow
-import mlflow.sklearn
-import mlflow.lightgbm
+import time
 import warnings
 
+import lightgbm as lgb
+import mlflow
+import mlflow.lightgbm
+import mlflow.sklearn
+import numpy as np
+import optuna
+import pandas as pd
+from sklearn.linear_model import LogisticRegression
+from sklearn.metrics import (accuracy_score, f1_score, precision_score,
+                             recall_score, roc_auc_score)
+from sklearn.model_selection import train_test_split, cross_val_score
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import StandardScaler
+
+# 경고 메시지 무시
 warnings.filterwarnings('ignore')
 
 # 1. 데이터 관리 클래스
 class DataManager:
-    """데이터 로드, 전처리, 분할을 담당하는 클래스"""
-
+    """데이터 로드 및 분할을 담당하는 클래스"""
     def __init__(self, data_path):
-        """
-        Args:
-            data_path (str): 데이터 파일 경로
-        """
         self.data_path = data_path
-        self.features_df = None
+        self.df = None
 
     def load_data(self):
-        """데이터를 로드하고 초기 피처를 선택"""
+        """데이터를 로드"""
         print("데이터 로딩 중...")
-        df = pd.read_csv(self.data_path, low_memory=False)
+        try:
+            self.df = pd.read_csv(self.data_path)
+            print("데이터 로딩 완료. 데이터 크기:", self.df.shape)
+            return self.df
+        except FileNotFoundError:
+            print(f"오류: '{self.data_path}' 파일을 찾을 수 없습니다.")
+            print("먼저 전처리 스크립트를 실행하여 파일을 생성해주세요.")
+            return None
 
-        # 데이터 누수 가능성이 높은 'risk_score', 'policy_code'를 제외하고 피처 선택
-        selected_columns = [
-            'amount_requested', 'employment_length', 'application_date',
-            'loan_title', 'zip_code', 'state', 'dti', 'target'
-        ]
-        self.features_df = df[selected_columns].copy()
-        print("데이터 로딩 완료.")
-
-    def preprocess(self):
-        """데이터 전처리를 수행"""
-        print("데이터 전처리 중...")
-        df = self.features_df
-
-        # 날짜 피처 생성
-        df["application_date"] = pd.to_datetime(df["application_date"], errors="coerce")
-        df["issue_year"] = df["application_date"].dt.year.astype("Int16")
-        df["issue_month"] = df["application_date"].dt.month.astype("Int8")
-
-        # employment_length 숫자형으로 변환
-        emp_length_map = {
-            '< 1 year': 0, '1 year': 1, '2 years': 2, '3 years': 3, '4 years': 4,
-            '5 years': 5, '6 years': 6, '7 years': 7, '8 years': 8, '9 years': 9, '10+ years': 10
-        }
-        df['employment_length'] = df['employment_length'].map(emp_length_map)
-
-        # dti 피처 정리
-        df["dti"] = pd.to_numeric(df["dti"].astype(str).str.replace("%", "", regex=False), errors="coerce").astype("float32")
-
-        # zip_code 전처리 (앞 3자리만 사용) 및 라벨 인코딩
-        df["zip_prefix"] = df["zip_code"].astype(str).str[:3]
-        le = LabelEncoder()
-        df["zip_prefix"] = le.fit_transform(df["zip_prefix"].astype(str))
-
-        # state 원핫 인코딩
-        df = pd.get_dummies(df, columns=["state"], prefix="state", dtype=int)
-
-        # 불필요한 원본 컬럼 삭제
-        df.drop(columns=["application_date", "zip_code", "loan_title"], inplace=True, errors="ignore")
-
-        self.features_df = df
-        print("데이터 전처리 완료.")
-
-    def split_data(self, val_year=2017, test_year=2018):
-        """시간 기준으로 데이터를 훈련, 검증, 테스트 세트로 분할"""
-        print("데이터 분할 중...")
-        train_df = self.features_df[self.features_df["issue_year"] < val_year]
-        val_df = self.features_df[(self.features_df["issue_year"] >= val_year) & (self.features_df["issue_year"] < test_year)]
-        test_df = self.features_df[self.features_df["issue_year"] >= test_year]
-
-        X_train, y_train = train_df.drop("target", axis=1), train_df["target"]
-        X_val, y_val = val_df.drop("target", axis=1), val_df["target"]
-        X_test, y_test = test_df.drop("target", axis=1), test_df["target"]
-        
-        # NaN 값 처리
-        imputer = SimpleImputer(strategy="median")
-        X_train = pd.DataFrame(imputer.fit_transform(X_train), columns=X_train.columns)
-        X_val = pd.DataFrame(imputer.transform(X_val), columns=X_val.columns)
-        X_test = pd.DataFrame(imputer.transform(X_test), columns=X_test.columns)
-        
+    def split_data(self):
+        """데이터를 훈련 및 테스트 세트로 분할"""
+        print("학습/테스트 데이터 분할 중...")
+        X = self.df.drop('loan_status', axis=1)
+        y = self.df['loan_status']
+        X_train, X_test, y_train, y_test = train_test_split(
+            X, y, test_size=0.2, random_state=42, stratify=y
+        )
         print("데이터 분할 완료.")
-        return X_train, y_train, X_val, y_val, X_test, y_test
+        print(f"학습 데이터: {X_train.shape}, 테스트 데이터: {X_test.shape}")
+        return X_train, X_test, y_train, y_test
 
 # 2. 모델 훈련 및 평가 클래스
-
 class ModelTrainer:
     """모델 훈련, 평가, MLflow 로깅을 담당하는 클래스"""
+    def __init__(self, X_train, X_test, y_train, y_test):
+        self.X_train, self.X_test = X_train, X_test
+        self.y_train, self.y_test = y_train, y_test
 
-    def __init__(self, X_train, y_train, X_val, y_val, X_test, y_test):
-        self.data = {
-            "X_train": X_train, "y_train": y_train,
-            "X_val": X_val, "y_val": y_val,
-            "X_test": X_test, "y_test": y_test
-        }
-
-    def evaluate_and_log(self, y_true, y_proba, y_pred, model_name):
-        """성능 지표를 계산하고 MLflow에 로깅"""
-        print(f"--- {model_name} 평가 결과 ---")
+    def evaluate_and_log(self, y_true, y_pred, y_prob, model_name):
+        """성능 지표를 계산하고 출력하며 MLflow에 로깅"""
+        print(f"--- {model_name} 모델 성능 평가 ---")
         metrics = {
-            "AUC": roc_auc_score(y_true, y_proba),
-            "F1": f1_score(y_true, y_pred),
             "Accuracy": accuracy_score(y_true, y_pred),
             "Precision": precision_score(y_true, y_pred),
-            "Recall": recall_score(y_true, y_pred)
+            "Recall": recall_score(y_true, y_pred),
+            "F1_Score": f1_score(y_true, y_pred),
+            "ROC_AUC": roc_auc_score(y_true, y_prob)
         }
+        for name, value in metrics.items():
+            print(f"{name}: {value:.4f}")
+        
         mlflow.log_metrics(metrics)
-        for k, v in metrics.items():
-            print(f"{k}: {v:.4f}")
-        return metrics
+        print("-" * 40 + "\n")
 
-    def run_logistic(self, use_scaler=False):
+    def run_logistic_regression(self, use_scaler=False):
         """Logistic Regression 모델을 훈련하고 평가"""
-        run_name = "Logistic_with_Scaler" if use_scaler else "Logistic"
-        with mlflow.start_run(run_name=run_name):
-            X_train, y_train = self.data["X_train"], self.data["y_train"]
-            X_test, y_test = self.data["X_test"], self.data["y_test"]
-
+        model_name = "Logistic Regression + StandardScaler" if use_scaler else "Logistic Regression (기본)"
+        
+        with mlflow.start_run(run_name=model_name):
+            start_time = time.time()
             if use_scaler:
-                scaler = StandardScaler()
-                X_train = scaler.fit_transform(X_train)
-                X_test = scaler.transform(X_test)
+                model = Pipeline([
+                    ('scaler', StandardScaler()),
+                    ('logreg', LogisticRegression(max_iter=1000, random_state=42))
+                ])
+            else:
+                model = LogisticRegression(max_iter=1000, random_state=42)
             
-            model = LogisticRegression(
-                C=1.0, penalty="l2", solver="liblinear",
-                max_iter=1000, class_weight="balanced", random_state=42
-            )
-            model.fit(X_train, y_train)
+            model.fit(self.X_train, self.y_train)
+            
+            pred = model.predict(self.X_test)
+            prob = model.predict_proba(self.X_test)[:, 1]
+            
+            self.evaluate_and_log(self.y_test, pred, prob, model_name)
+            mlflow.log_param("use_scaler", use_scaler)
+            mlflow.sklearn.log_model(model, "model")
+            
+            elapsed_time = time.time() - start_time
+            print(f"소요 시간: {elapsed_time:.2f}초")
+            mlflow.log_metric("training_time", elapsed_time)
 
-            y_proba = model.predict_proba(X_test)[:, 1]
-            y_pred = model.predict(X_test)
-
-            mlflow.log_param("model_type", run_name)
-            self.evaluate_and_log(y_test, y_proba, y_pred, run_name)
-            mlflow.sklearn.log_model(model, "model", input_example=pd.DataFrame(X_train[:5], columns=self.data["X_train"].columns))
-
-    def run_lightgbm(self):
+    def run_lightgbm_basic(self):
         """기본 LightGBM 모델을 훈련하고 평가"""
-        run_name = "LightGBM_basic"
-        with mlflow.start_run(run_name=run_name):
-            d = self.data
-            model = lgb.LGBMClassifier(
-                objective="binary", metric="auc",
-                n_estimators=500, learning_rate=0.05,
-                max_depth=6, num_leaves=31,
-                class_weight="balanced", random_state=42
-            )
-            model.fit(d["X_train"], d["y_train"], 
-                      eval_set=[(d["X_val"], d["y_val"])], 
-                      callbacks=[lgb.early_stopping(50, verbose=False)])
-            
-            y_proba = model.predict_proba(d["X_test"])[:, 1]
-            y_pred = model.predict(d["X_test"])
+        model_name = "LightGBM (기본)"
+        with mlflow.start_run(run_name=model_name):
+            start_time = time.time()
+            model = lgb.LGBMClassifier(random_state=42)
+            model.fit(self.X_train, self.y_train)
 
-            mlflow.log_param("model_type", run_name)
-            self.evaluate_and_log(d["y_test"], y_proba, y_pred, run_name)
-            mlflow.lightgbm.log_model(model, "model", input_example=d["X_train"][:5])
+            pred = model.predict(self.X_test)
+            prob = model.predict_proba(self.X_test)[:, 1]
+
+            self.evaluate_and_log(self.y_test, pred, prob, model_name)
+            mlflow.lightgbm.log_model(model, "model")
+
+            elapsed_time = time.time() - start_time
+            print(f"소요 시간: {elapsed_time:.2f}초")
+            mlflow.log_metric("training_time", elapsed_time)
 
     def run_lightgbm_optuna(self, n_trials):
         """Optuna를 사용하여 LightGBM 하이퍼파라미터를 최적화하고 평가"""
-        d = self.data
+        model_name = "LightGBM + Optuna"
         
-        # SMOTE는 훈련 데이터에만 적용
-        smote = SMOTE(random_state=42)
-        X_train_smote, y_train_smote = smote.fit_resample(d["X_train"], d["y_train"])
-
         def objective(trial):
-            params = {
-                "objective": "binary", "metric": "auc", "boosting_type": "gbdt",
-                "learning_rate": trial.suggest_float("learning_rate", 0.01, 0.2, log=True),
-                "num_leaves": trial.suggest_int("num_leaves", 20, 300),
-                "max_depth": trial.suggest_int("max_depth", 3, 12),
-                "min_child_samples": trial.suggest_int("min_child_samples", 5, 100),
-                "subsample": trial.suggest_float("subsample", 0.6, 1.0),
-                "colsample_bytree": trial.suggest_float("colsample_bytree", 0.6, 1.0),
+            param = {
+                'objective': 'binary', 'metric': 'auc', 'verbosity': -1,
+                'boosting_type': 'gbdt',
+                'n_estimators': trial.suggest_int('n_estimators', 100, 1000),
+                'learning_rate': trial.suggest_float('learning_rate', 1e-3, 0.1, log=True),
+                'num_leaves': trial.suggest_int('num_leaves', 20, 300),
+                'max_depth': trial.suggest_int('max_depth', 3, 12),
+                'lambda_l1': trial.suggest_float('lambda_l1', 1e-8, 10.0, log=True),
+                'lambda_l2': trial.suggest_float('lambda_l2', 1e-8, 10.0, log=True),
+                'feature_fraction': trial.suggest_float('feature_fraction', 0.4, 1.0),
+                'bagging_fraction': trial.suggest_float('bagging_fraction', 0.4, 1.0),
+                'bagging_freq': trial.suggest_int('bagging_freq', 1, 7),
             }
-            model = lgb.LGBMClassifier(**params, n_estimators=1000, random_state=42)
-            model.fit(X_train_smote, y_train_smote, eval_set=[(d["X_val"], d["y_val"])], callbacks=[lgb.early_stopping(50, verbose=False)])
-            preds = model.predict_proba(d["X_val"])[:, 1]
-            return roc_auc_score(d["y_val"], preds)
+            model = lgb.LGBMClassifier(**param)
+            score = cross_val_score(model, self.X_train, self.y_train, cv=3, scoring='roc_auc').mean()
+            return score
 
-        run_name = "LightGBM_Optuna"
-        with mlflow.start_run(run_name=run_name):
-            study = optuna.create_study(direction="maximize")
+        with mlflow.start_run(run_name=model_name):
+            print(f"--- {model_name} 하이퍼파라미터 튜닝 시작 (n_trials={n_trials}) ---")
+            start_time = time.time()
+            study = optuna.create_study(direction='maximize')
             study.optimize(objective, n_trials=n_trials)
-            best_params = study.best_trial.params
-
-            model = lgb.LGBMClassifier(**best_params, n_estimators=1000, random_state=42)
-            model.fit(X_train_smote, y_train_smote, eval_set=[(d["X_val"], d["y_val"])], callbacks=[lgb.early_stopping(50, verbose=False)])
             
-            y_proba = model.predict_proba(d["X_test"])[:, 1]
-            y_pred = model.predict(d["X_test"])
+            tuning_time = time.time() - start_time
+            print("튜닝 완료!")
+            print(f"소요 시간: {tuning_time:.2f}초")
+            print("최적 하이퍼파라미터:", study.best_params)
 
-            mlflow.log_params(best_params)
-            mlflow.log_param("model_type", run_name)
-            self.evaluate_and_log(d["y_test"], y_proba, y_pred, run_name)
-            mlflow.lightgbm.log_model(model, "model", input_example=d["X_train"][:5])
+            mlflow.log_params(study.best_params)
+            mlflow.log_metric("tuning_time", tuning_time)
 
+            # 최적 파라미터로 최종 모델 학습 및 평가
+            best_model = lgb.LGBMClassifier(**study.best_params, random_state=42)
+            best_model.fit(self.X_train, self.y_train)
+
+            pred = best_model.predict(self.X_test)
+            prob = best_model.predict_proba(self.X_test)[:, 1]
+            
+            self.evaluate_and_log(self.y_test, pred, prob, f"{model_name} (튜닝 완료)")
+            mlflow.lightgbm.log_model(best_model, "model")
 
 # 3. 메인 실행 블록
 def main(args):
@@ -217,30 +171,23 @@ def main(args):
     mlflow.set_experiment(args.experiment_name)
 
     # 1. 데이터 준비
-    data_manager = DataManager(args.data)
-    data_manager.load_data()
-    data_manager.preprocess()
-    X_train, y_train, X_val, y_val, X_test, y_test = data_manager.split_data()
+    data_manager = DataManager(args.data_path)
+    if data_manager.load_data() is None:
+        return
+    X_train, X_test, y_train, y_test = data_manager.split_data()
 
-    # 2. 모델 훈련 및 평가
-    trainer = ModelTrainer(X_train, y_train, X_val, y_val, X_test, y_test)
+    # 2. 모델 훈련 파이프라인
+    trainer = ModelTrainer(X_train, X_test, y_train, y_test)
     
-    print("\n[실험 1] Logistic Regression (No Scaler)")
-    trainer.run_logistic(use_scaler=False)
-    
-    print("\n[실험 2] Logistic Regression (With Scaler)")
-    trainer.run_logistic(use_scaler=True)
-
-    print("\n[실험 3] LightGBM (Basic)")
-    trainer.run_lightgbm()
-    
-    print(f"\n[실험 4] LightGBM with Optuna (Trials: {args.n_trials})")
-    trainer.run_lightgbm_optuna(args.n_trials)
+    trainer.run_logistic_regression(use_scaler=False)
+    trainer.run_logistic_regression(use_scaler=True)
+    trainer.run_lightgbm_basic()
+    trainer.run_lightgbm_optuna(n_trials=args.n_trials)
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Loan Default Prediction Model Training")
-    parser.add_argument("--data", type=str, default=r"C:\Loan_Default_Prediction_MLOps\data\loan_approval_2M_stratified.csv")
+    parser = argparse.ArgumentParser(description="Loan Approval Prediction Model Training")
+    parser.add_argument("--data_path", type=str, default=r"C:\Loan_Default_Prediction_MLOps\data\processed_loan_data_balanced.csv")
     parser.add_argument("--n_trials", type=int, default=20)
-    parser.add_argument("--experiment_name", type=str, default="Loan_Approval_Refactored")
+    parser.add_argument("--experiment_name", type=str, default="Loan_Approval_Models")
     args = parser.parse_args()
     main(args)

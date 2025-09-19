@@ -9,11 +9,11 @@ import os
 
 app = FastAPI(title="Loan Default Prediction API")
 
-# ----- 설정 -----
+# 설정 
 THRESHOLD = 0.4  # 예측 기준값
 LOG_PATH = "predictions_log.csv"
 
-# ----- 입력 스키마 (간단 입력) -----
+# 입력 스키마 (간단 입력) 
 class LoanApplication(BaseModel):
     amount_requested: float
     employment_length: int
@@ -34,7 +34,7 @@ def predict(app_data: LoanApplication):
         expected_features = model.booster_.feature_name()
         input_dict = {f: 0 for f in expected_features}  # 전부 0으로 초기화
 
-        # ----- 필수 feature 채우기 -----
+        # 필수 feature 채우기
         input_dict["amount_requested"] = app_data.amount_requested
         input_dict["employment_length"] = app_data.employment_length
         input_dict["dti"] = app_data.dti
@@ -52,10 +52,10 @@ def predict(app_data: LoanApplication):
         else:
             raise HTTPException(status_code=400, detail=f"지원하지 않는 state 입력: {app_data.state}")
 
-        # ----- DataFrame 변환 -----
+        # DataFrame 변환
         input_df = pd.DataFrame([input_dict])[expected_features]
 
-        # ----- 예측 -----
+        # 예측
         proba = model.predict_proba(input_df)[:, 1][0]
         raw_pred = int(proba >= THRESHOLD)
 
@@ -70,7 +70,7 @@ def predict(app_data: LoanApplication):
             "threshold": THRESHOLD
         }
 
-        # ----- 로그 저장 -----
+        # 로그 저장
         log_df = pd.DataFrame([{
             **app_data.dict(),
             "prediction": prediction,
