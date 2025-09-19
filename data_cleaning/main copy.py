@@ -5,13 +5,8 @@ import mlflow
 import mlflow.lightgbm
 from save_artifacts import model
 from datetime import datetime
-import os
 
 app = FastAPI(title="Loan Default Prediction API")
-
-# ----- 설정 -----
-THRESHOLD = 0.4  # 예측 기준값
-LOG_PATH = "predictions_log.csv"
 
 # ----- 입력 스키마 (간단 입력) -----
 class LoanApplication(BaseModel):
@@ -57,31 +52,16 @@ def predict(app_data: LoanApplication):
 
         # ----- 예측 -----
         proba = model.predict_proba(input_df)[:, 1][0]
-        raw_pred = int(proba >= THRESHOLD)
+        threshold = 0.4
+        prediction = int(proba >= threshold)
 
-        prediction = 1 - raw_pred
-
-        result = {
+        return {
             "prediction": prediction,
             "probability": float(proba),
             "used_state": state_col,
             "issue_year": input_dict["issue_year"],
-            "issue_month": input_dict["issue_month"],
-            "threshold": THRESHOLD
+            "issue_month": input_dict["issue_month"]
         }
-
-        # ----- 로그 저장 -----
-        log_df = pd.DataFrame([{
-            **app_data.dict(),
-            "prediction": prediction,
-            "probability": float(proba),
-            "issue_year": input_dict["issue_year"],
-            "issue_month": input_dict["issue_month"],
-            "timestamp": now
-        }])
-        log_df.to_csv(LOG_PATH, mode="a", header=not os.path.exists(LOG_PATH), index=False)
-
-        return result
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
